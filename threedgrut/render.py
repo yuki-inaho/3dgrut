@@ -94,7 +94,15 @@ class Renderer:
 
     @classmethod
     def from_checkpoint(
-        cls, checkpoint_path, out_dir, path="", save_gt=True, writer=None, model=None, computes_extra_metrics=True
+        cls,
+        checkpoint_path,
+        out_dir,
+        path="",
+        save_gt=True,
+        writer=None,
+        model=None,
+        computes_extra_metrics=True,
+        enable_normals=False,
     ):
         """Loads checkpoint for test path.
         If path is stated, it will override the test path in checkpoint.
@@ -105,6 +113,11 @@ class Renderer:
         global_step = checkpoint["global_step"]
 
         conf = checkpoint["config"]
+        if enable_normals:
+            # Normals are a tracer compile-time option. Set this before model
+            # construction so checkpoints trained without normal output can be
+            # rendered with geometric normal maps afterwards.
+            conf["render"]["enable_normals"] = True
         # overrides
         if conf["render"]["method"] == "3dgrt":
             conf["render"]["particle_kernel_density_clamping"] = True
