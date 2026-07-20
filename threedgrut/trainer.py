@@ -92,7 +92,8 @@ class Trainer3DGRUT:
     _distillation_start_step: int = -1
     """ Step at which distillation starts (-1 means disabled) """
 
-    _color_refine_frozen_param_names = frozenset(("positions", "scale", "rotation", "density"))
+    _geometry_param_names = frozenset(("positions", "scale", "rotation", "density"))
+    _color_refine_frozen_param_names = _geometry_param_names
     """ Gaussian optimizer parameter groups frozen during NHT color refinement """
 
     @staticmethod
@@ -133,6 +134,12 @@ class Trainer3DGRUT:
         """ Step at which NHT color refinement starts """
         self._in_color_refine = False
         """ Whether NHT color refinement is active """
+        self._geometry_warmup_steps = self._get_geometry_warmup_steps(conf)
+        """ Number of initial NHT steps that retain imported Gaussian geometry exactly """
+        self._geometry_lr_scale = self._get_geometry_lr_scale(conf)
+        """ Geometry learning-rate multiplier after warmup """
+        self._in_geometry_warmup = False
+        """ Whether the imported-geometry warmup phase is active """
 
         # Setup the trainer and components
         logger.log_rule("Load Datasets")
@@ -161,6 +168,71 @@ class Trainer3DGRUT:
             return conf.n_iterations
 
         return max(0, conf.n_iterations - color_refine_steps)
+
+    def _get_geometry_warmup_steps(self, conf: DictConfig) -> int:
+        """Return the length of the optional imported-geometry warmup phase."""
+        feature_type = str(OmegaConf.select(conf, "model.feature_type", default="sh")).lower()
+        if feature_type != "nht":
+            return 0
+
+        warmup_steps = int(OmegaConf.select(conf, "model.nht_decoder.geometry_warmup_steps", default=0) or 0)
+        if warmup_steps < 0:
+            raise ValueError("model.nht_decoder.geometry_warmup_steps must be non-negative")
+        if warmup_steps > self._color_refine_start_step:
+            raise ValueError(
+                "model.nht_decoder.geometry_warmup_steps must end before NHT color refinement begins"
+            )
+        return warmup_steps
+
+    def _get_geometry_lr_scale(self, conf: DictConfig) -> float:
+        """Return the optional post-warmup multiplier for Gaussian geometry learning rates."""
+        feature_type = str(OmegaConf.select(conf, "model.feature_type", default="sh")).lower()
+        if feature_type != "nht":
+            return 1.0
+
+        lr_scale = float(OmegaConf.select(conf, "model.nht_decoder.geometry_lr_scale", default=1.0) or 1.0)
+        if lr_scale <= 0:
+            raise ValueError("model.nht_decoder.geometry_lr_scale must be positive")
+        return lr_scale
+
+    def _is_geometry_warmup_active(self, global_step: int) -> bool:
+        return global_step < self._geometry_warmup_steps
+
+    def _apply_geometry_warmup(self, global_step: int, apply_lr_scale: bool = False) -> None:
+        """Freeze imported geometry first, then optionally lower its learning rate."""
+        if self.model.optimizer is None:
+            return
+
+        if self._is_geometry_warmup_active(global_step):
+            if not self._in_geometry_warmup:
+                self._in_geometry_warmup = True
+                self.strategy.suspend()
+                logger.info(
+                    f"🧊 [step {global_step}] Entering NHT geometry warmup: preserving imported Gaussian geometry."
+                )
+            for param_group in self.model.optimizer.param_groups:
+                if param_group.get("name") in self._geometry_param_names:
+                    param_group["lr"] = 0.0
+            return
+
+        if self._in_geometry_warmup:
+            self._in_geometry_warmup = False
+            self.strategy.resume()
+            logger.info(f"🧭 [step {global_step}] Leaving NHT geometry warmup: enabling geometry optimization.")
+
+        if apply_lr_scale and not self._in_color_refine and self._geometry_lr_scale != 1.0:
+            for param_group in self.model.optimizer.param_groups:
+                if param_group.get("name") in self._geometry_param_names:
+                    param_group["lr"] *= self._geometry_lr_scale
+
+    def _zero_geometry_warmup_grads(self) -> None:
+        if not self._in_geometry_warmup or self.model.optimizer is None:
+            return
+
+        for param_group in self.model.optimizer.param_groups:
+            if param_group.get("name") in self._geometry_param_names:
+                for param in param_group["params"]:
+                    param.grad = None
 
     def _is_color_refine_active(self, global_step: int) -> bool:
         return global_step >= self._color_refine_start_step and self._color_refine_start_step < self.conf.n_iterations
@@ -1124,6 +1196,7 @@ class Trainer3DGRUT:
         metrics: list,
         conf: DictConfig,
     ):
+        self._apply_geometry_warmup(global_step)
         self._apply_color_refine_freeze(global_step)
 
         # Freeze Gaussians and suspend strategy when distillation starts
@@ -1205,6 +1278,7 @@ class Trainer3DGRUT:
 
         # Optimizer step
         with torch.cuda.nvtx.range(f"train_{global_step}_backprop"):
+            self._zero_geometry_warmup_grads()
             self._zero_color_refine_frozen_grads()
             if isinstance(self.model.optimizer, SelectiveAdam):
                 assert (
@@ -1218,6 +1292,7 @@ class Trainer3DGRUT:
         # Scheduler step
         with torch.cuda.nvtx.range(f"train_{global_step}_scheduler"):
             self.model.scheduler_step(global_step)
+            self._apply_geometry_warmup(global_step, apply_lr_scale=True)
             self._apply_color_refine_freeze(global_step)
 
         # Feature decoder optimizer/scheduler step

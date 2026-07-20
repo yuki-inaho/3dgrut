@@ -935,73 +935,105 @@ class MixtureOfGaussians(torch.nn.Module, ExportableModel):
 
     @torch.no_grad()
     def init_from_ply(self, mogt_path: str, init_model=True):
-        if self.feature_type != Features.Type.SH:
-            raise NotImplementedError(
-                f"init_from_ply only supports feature_type='sh', got '{self.feature_type.name.lower()}'"
-            )
         plydata = PlyData.read(mogt_path)
+        vertex = plydata["vertex"]
 
         mogt_pos = np.stack(
             (
-                np.asarray(plydata.elements[0]["x"]),
-                np.asarray(plydata.elements[0]["y"]),
-                np.asarray(plydata.elements[0]["z"]),
+                np.asarray(vertex["x"]),
+                np.asarray(vertex["y"]),
+                np.asarray(vertex["z"]),
             ),
             axis=1,
-        )
-        mogt_densities = np.asarray(plydata.elements[0]["opacity"])[..., np.newaxis]
+        ).astype(np.float32)
+        mogt_densities = np.asarray(vertex["opacity"], dtype=np.float32)[..., np.newaxis]
 
         num_gaussians = mogt_pos.shape[0]
-        mogt_albedo = np.zeros((num_gaussians, 3))
-        mogt_albedo[:, 0] = np.asarray(plydata.elements[0]["f_dc_0"])
-        mogt_albedo[:, 1] = np.asarray(plydata.elements[0]["f_dc_1"])
-        mogt_albedo[:, 2] = np.asarray(plydata.elements[0]["f_dc_2"])
+        scale_names = [p.name for p in vertex.properties if p.name.startswith("scale_")]
+        scale_names = sorted(scale_names, key=lambda x: int(x.split("_")[-1]))
+        mogt_scales = np.zeros((num_gaussians, len(scale_names)), dtype=np.float32)
+        for idx, attr_name in enumerate(scale_names):
+            mogt_scales[:, idx] = np.asarray(vertex[attr_name], dtype=np.float32)
 
-        extra_f_names = [p.name for p in plydata.elements[0].properties if p.name.startswith("f_rest_")]
-        extra_f_names = sorted(extra_f_names, key=lambda x: int(x.split("_")[-1]))
-        num_speculars = (self.max_n_features + 1) ** 2 - 1
-        expected_extra_f_count = 3 * num_speculars
+        rot_names = [p.name for p in vertex.properties if p.name.startswith("rot")]
+        rot_names = sorted(rot_names, key=lambda x: int(x.split("_")[-1]))
+        mogt_rotation = np.zeros((num_gaussians, len(rot_names)), dtype=np.float32)
+        for idx, attr_name in enumerate(rot_names):
+            mogt_rotation[:, idx] = np.asarray(vertex[attr_name], dtype=np.float32)
 
-        mogt_specular = np.zeros((num_gaussians, expected_extra_f_count))
-        if len(extra_f_names) == expected_extra_f_count:
-            # Full spherical harmonics data available
-            for idx, attr_name in enumerate(extra_f_names):
-                mogt_specular[:, idx] = np.asarray(plydata.elements[0][attr_name])
-            mogt_specular = mogt_specular.reshape((num_gaussians, 3, num_speculars))
-            mogt_specular = mogt_specular.transpose(0, 2, 1).reshape((num_gaussians, num_speculars * 3))
-        elif len(extra_f_names) == 0:
-            # Only DC components available, create zero-filled higher-order harmonics
-            logger.info(f"PLY file only contains DC components, initializing higher-order spherical harmonics to zero")
-        else:
-            # Partial data - this is unexpected
+        if mogt_scales.shape[1] != 3 or mogt_rotation.shape[1] != 4:
             raise ValueError(
-                f"Unexpected number of f_rest_ properties: found {len(extra_f_names)}, expected {expected_extra_f_count} or 0"
+                f"Expected PLY Gaussian geometry with 3 scales and 4 rotation values, "
+                f"got scales={mogt_scales.shape[1]}, rotations={mogt_rotation.shape[1]}"
             )
 
-        scale_names = [p.name for p in plydata.elements[0].properties if p.name.startswith("scale_")]
-        scale_names = sorted(scale_names, key=lambda x: int(x.split("_")[-1]))
-        mogt_scales = np.zeros((num_gaussians, len(scale_names)))
-        for idx, attr_name in enumerate(scale_names):
-            mogt_scales[:, idx] = np.asarray(plydata.elements[0][attr_name])
-
-        rot_names = [p.name for p in plydata.elements[0].properties if p.name.startswith("rot")]
-        rot_names = sorted(rot_names, key=lambda x: int(x.split("_")[-1]))
-        mogt_rotation = np.zeros((num_gaussians, len(rot_names)))
-        for idx, attr_name in enumerate(rot_names):
-            mogt_rotation[:, idx] = np.asarray(plydata.elements[0][attr_name])
-
         self.positions = torch.nn.Parameter(torch.tensor(mogt_pos, dtype=self.positions.dtype, device=self.device))
-        self.features_albedo = torch.nn.Parameter(
-            torch.tensor(mogt_albedo, dtype=self.features_albedo.dtype, device=self.device)
-        )
-        self.features_specular = torch.nn.Parameter(
-            torch.tensor(mogt_specular, dtype=self.features_specular.dtype, device=self.device)
-        )
         self.density = torch.nn.Parameter(torch.tensor(mogt_densities, dtype=self.density.dtype, device=self.device))
         self.scale = torch.nn.Parameter(torch.tensor(mogt_scales, dtype=self.scale.dtype, device=self.device))
         self.rotation = torch.nn.Parameter(torch.tensor(mogt_rotation, dtype=self.rotation.dtype, device=self.device))
 
-        self.n_active_features = self.max_n_features
+        if self.feature_type == Features.Type.SH:
+            mogt_albedo = np.stack(
+                (
+                    np.asarray(vertex["f_dc_0"], dtype=np.float32),
+                    np.asarray(vertex["f_dc_1"], dtype=np.float32),
+                    np.asarray(vertex["f_dc_2"], dtype=np.float32),
+                ),
+                axis=1,
+            )
+
+            extra_f_names = [p.name for p in vertex.properties if p.name.startswith("f_rest_")]
+            extra_f_names = sorted(extra_f_names, key=lambda x: int(x.split("_")[-1]))
+            num_speculars = (self.max_n_features + 1) ** 2 - 1
+            expected_extra_f_count = 3 * num_speculars
+
+            mogt_specular = np.zeros((num_gaussians, expected_extra_f_count), dtype=np.float32)
+            if len(extra_f_names) == expected_extra_f_count:
+                # Full spherical harmonics data available
+                for idx, attr_name in enumerate(extra_f_names):
+                    mogt_specular[:, idx] = np.asarray(vertex[attr_name], dtype=np.float32)
+                mogt_specular = mogt_specular.reshape((num_gaussians, 3, num_speculars))
+                mogt_specular = mogt_specular.transpose(0, 2, 1).reshape((num_gaussians, num_speculars * 3))
+            elif len(extra_f_names) == 0:
+                # Only DC components available, create zero-filled higher-order harmonics
+                logger.info(
+                    "PLY file only contains DC components, initializing higher-order spherical harmonics to zero"
+                )
+            else:
+                raise ValueError(
+                    f"Unexpected number of f_rest_ properties: found {len(extra_f_names)}, "
+                    f"expected {expected_extra_f_count} or 0"
+                )
+
+            self.features_albedo = torch.nn.Parameter(
+                torch.tensor(mogt_albedo, dtype=self.features_albedo.dtype, device=self.device)
+            )
+            self.features_specular = torch.nn.Parameter(
+                torch.tensor(mogt_specular, dtype=self.features_specular.dtype, device=self.device)
+            )
+            self.n_active_features = self.max_n_features
+        elif self.feature_type == Features.Type.NHT:
+            # Standard 3DGS PLY files store SH radiance, not NHT features. Transfer the
+            # learned Gaussian geometry and initialize the NHT representation deterministically.
+            rng = torch.Generator(device=self.device).manual_seed(int(self.conf.seed_initialization))
+            init_min = float(getattr(self.conf.model.nht_features, "init_min", -5.0))
+            init_max = float(getattr(self.conf.model.nht_features, "init_max", 5.0))
+            features = torch.rand(
+                (num_gaussians, self.particle_feature_dim),
+                dtype=self.positions.dtype,
+                device=self.device,
+                generator=rng,
+            )
+            features.mul_(init_max - init_min).add_(init_min)
+            self.features = torch.nn.Parameter(features)
+            self.n_active_features = self.ray_feature_dim
+            logger.info(
+                f"Imported {num_gaussians} Gaussian geometry values from SH PLY; initialized "
+                f"{self.particle_feature_dim}-dimensional NHT features from seed "
+                f"{int(self.conf.seed_initialization)} because SH coefficients cannot be copied into NHT directly."
+            )
+        else:
+            raise ValueError(f"Unknown feature_type: {self.feature_type}")
 
         if init_model:
             self.set_optimizable_parameters()

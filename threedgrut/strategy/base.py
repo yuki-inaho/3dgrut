@@ -34,6 +34,10 @@ class BaseStrategy:
         """
         self._suspended = True
 
+    def resume(self) -> None:
+        """Resume callbacks after a temporary training phase suspension."""
+        self._suspended = False
+
     def init_densification_buffer(self, checkpoint: Optional[dict] = None):
         """Callback function to initialize the densification buffers."""
         pass

@@ -273,6 +273,29 @@ python train.py --config-name apps/colmap_3dgrt_mcmc_nht.yaml path=data/mipnerf3
 python train.py --config-name apps/colmap_3dgut_mcmc_nht.yaml path=data/mipnerf360/bonsai out_dir=runs experiment_name=bonsai_3dgut_nht dataset.downsample_factor=2
 ```
 
+#### Warm-starting NHT from a 3DGS PLY
+
+An NHT model can import the Gaussian geometry from a standard 3DGS PLY. Positions,
+rotations, scales, and opacity are retained; SH coefficients are not compatible with
+NHT and are replaced by a newly learned NHT feature field and decoder. Keep the same
+COLMAP coordinate system (`dataset.normalize_world_space=false`) and provide paths at
+the command line:
+
+```bash
+python train.py --config-name apps/colmap_3dgrt_mcmc_nht.yaml \
+  path=/path/to/colmap_scene \
+  out_dir=runs experiment_name=nht_warm_start \
+  import_ply.enabled=true import_ply.path=/path/to/point_cloud.ply \
+  model.nht_decoder.geometry_warmup_steps=1000 \
+  model.nht_decoder.geometry_lr_scale=0.1 \
+  strategy.add.max_n_gaussians=NUM_IMPORTED_GAUSSIANS
+```
+
+The warmup trains only NHT appearance parameters for the requested number of steps,
+then enables conservative geometry optimization. Set `strategy.add.max_n_gaussians`
+to at least the imported Gaussian count to avoid unintentionally changing a dense
+warm-start through MCMC addition.
+
 To enable selective Adam, use:
 ```bash
 python train.py --config-name apps/colmap_3dgrt.yaml path=data/mipnerf360/bonsai out_dir=runs experiment_name=bonsai_3dgrt dataset.downsample_factor=2 optimizer.type=selective_adam

@@ -120,6 +120,10 @@ model:
       max_steps: 30000
     ema_decay: 0.95
     ema_start_step: 0
+    # For NHT warm-starts from a pretrained 3DGS PLY. Geometry is frozen while
+    # the new NHT feature field and decoder find an initial appearance solution.
+    geometry_warmup_steps: 0
+    geometry_lr_scale: 1.0
     color_refine_steps: 3000
 
   background:
