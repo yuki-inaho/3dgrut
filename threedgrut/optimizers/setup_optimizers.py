@@ -27,6 +27,8 @@ import os
 
 import torch
 
+from threedgrut.utils.jit import load as jit_load
+
 
 def setup_lib_optimizers_cc():
     root_dir = os.path.abspath(os.path.dirname(__file__))
@@ -54,15 +56,11 @@ def setup_lib_optimizers_cc():
 
     include_paths = [root_dir]
 
-    # Linker options.
-    if os.name == "posix":
-        ldflags = ["-lcuda", "-lnvrtc"]
-    elif os.name == "nt":
-        ldflags = ["cuda.lib", "advapi32.lib", "nvrtc.lib"]
-
     build_dir = torch.utils.cpp_extension._get_build_directory("lib_optimizers_cc", verbose=True)
 
-    return torch.utils.cpp_extension.load(
+    # Reuse the project JIT helper so CUDA driver stubs are discoverable in
+    # isolated Pixi CUDA environments as well as system CUDA installations.
+    return jit_load(
         name="lib_optimizers_cc",
         sources=[
             os.path.join(root_dir, "optimizers.cu"),
@@ -70,7 +68,6 @@ def setup_lib_optimizers_cc():
         ],
         extra_cflags=cflags,
         extra_cuda_cflags=nvcc_flags,
-        extra_ldflags=ldflags,
         extra_include_paths=include_paths,
         build_directory=build_dir,
         with_cuda=True,
