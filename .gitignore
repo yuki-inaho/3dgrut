@@ -3,6 +3,7 @@
 CLAUDE.md
 .polyscope.ini
 .venv/
+.pixi/
 
 external/
 runs/
