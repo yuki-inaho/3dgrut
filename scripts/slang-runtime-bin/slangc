@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+slang_root="${repo_dir}/.pixi/envs/default"
+runtime_root="${repo_dir}/.pixi/envs/slang-runtime/x86_64-conda-linux-gnu/sysroot"
+loader="${runtime_root}/lib64/ld-linux-x86-64.so.2"
+real_slangc="${slang_root}/bin/slangc"
+
+if [[ ! -x "${loader}" ]]; then
+    echo "Slang glibc 2.34 runtime is missing. Run:" >&2
+    echo "  CONDA_OVERRIDE_GLIBC=2.34 pixi install -e slang-runtime" >&2
+    exit 1
+fi
+if [[ ! -x "${real_slangc}" ]]; then
+    echo "Official slangc is missing. Run: pixi run install-slangc" >&2
+    exit 1
+fi
+
+library_path="${runtime_root}/lib64:${runtime_root}/usr/lib64:${slang_root}/lib"
+exec "${loader}" --library-path "${library_path}" "${real_slangc}" "$@"

@@ -72,6 +72,34 @@ For projects that require a fast, modular, and production-ready Gaussian Splatti
 - For good performance with 3DGRT, we recommend using an NVIDIA GPU with Ray Tracing (RT) cores.
 - Both Linux and Windows are supported via UV install scripts.
 
+### Using Pixi (Linux, CUDA 12.9)
+
+This fork includes a Pixi environment configured for CUDA 12.9 and compute
+capability 8.9 (for example, an RTX 4090). Install the Python/CUDA environment
+and native extensions with:
+
+```bash
+pixi install -e default
+pixi run install-project
+pixi run install-tcnn
+pixi run install-extra
+```
+
+The official Slang 2026.5.2 binary used by Neural Harmonic Textures requires a
+newer glibc than Ubuntu 20.04 provides. Keep glibc 2.34 isolated in the small
+`slang-runtime` environment and install Slang into the default environment:
+
+```bash
+CONDA_OVERRIDE_GLIBC=2.34 pixi install -e slang-runtime
+pixi run install-slangc
+pixi run slangc -version
+pixi run check
+```
+
+The activation script puts a dedicated `slangc` wrapper on `PATH`. Only that
+process is launched with the glibc 2.34 loader; Python, PyTorch, CUDA, and the
+compiled extensions continue to use the normal Pixi/host runtime.
+
 ### Using UV
 
 (Kindly contributed by [@MasahiroOgawa](https://github.com/MasahiroOgawa))
